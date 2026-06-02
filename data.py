@@ -102,7 +102,7 @@ def fetch_marine(days_back: int = 30) -> pd.DataFrame:
     })
 
     if data is None:
-        return _fallback_marine(days_back), False
+        return _fallback_marine(days_back)
 
     df = pd.DataFrame(data["hourly"])
     df["time"] = pd.to_datetime(df["time"])
@@ -150,7 +150,7 @@ def fetch_climate(days_back: int = 30) -> pd.DataFrame:
     })
 
     if data is None:
-        return _fallback_climate(days_back), False
+        return _fallback_climate(days_back)
 
     df = pd.DataFrame(data["daily"])
     df["time"] = pd.to_datetime(df["time"])
@@ -203,11 +203,11 @@ def fetch_argo(days_back: int = 90) -> pd.DataFrame:
     data = _get(url)
 
     if data is None:
-        return _fallback_argo(days_back), False
+        return _fallback_argo(days_back)
 
     table = data.get("table", {})
     if not table.get("rows"):
-        return _fallback_argo(days_back), False
+        return _fallback_argo(days_back)
 
     df = pd.DataFrame(table["rows"], columns=table["columnNames"])
     df["time"] = pd.to_datetime(df["time"])
