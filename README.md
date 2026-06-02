@@ -6,7 +6,7 @@ in the Cape Verde / Ocean Science Centre Mindelo (OSCM) region.**
 Built as a portfolio project demonstrating REST API skills, data harmonisation,
 quality control, and interactive visualisation with marine science data.
 
-👉 **[Live dashboard →](https://YOUR-APP-NAME.streamlit.app)**  *(replace with your Streamlit URL)*
+👉 **[Live dashboard →](https://oscm-dashboard.streamlit.app/)**  
 
 ---
 
