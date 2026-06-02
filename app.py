@@ -129,30 +129,34 @@ with st.sidebar:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_all(days: int):
-    marine  = fetch_marine(days)
-    climate = fetch_climate(days)
-    argo    = fetch_argo(max(days, 60))  # Argo needs a wider window
-    return marine, climate, argo
+    marine,  marine_live  = fetch_marine(days)
+    climate, climate_live = fetch_climate(days)
+    argo,    argo_live    = fetch_argo(max(days, 60))  # Argo needs a wider window
+    return marine, climate, argo, marine_live, climate_live, argo_live
 
 with st.spinner("Fetching data from APIs…"):
-    marine_df, climate_df, argo_df = load_all(days_back)
-
-# Detect if we're on synthetic data (ERDDAP fallback)
-using_fallback = argo_df.get("platform_number", pd.Series()).astype(str).str.startswith("391").all()
+    marine_df, climate_df, argo_df, marine_live, climate_live, argo_live = load_all(days_back)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # HEADER
 # ═════════════════════════════════════════════════════════════════════════════
 
-col_title, col_badge, col_ts = st.columns([4, 1, 2])
+col_title, col_badge, col_ts = st.columns([3, 1.5, 2])
 with col_title:
     st.markdown("# OSCM Cape Verde · Ocean Data Explorer")
 with col_badge:
     st.markdown("")
-    badge = "badge-cached" if using_fallback else "badge-live"
-    label = "DEMO DATA" if using_fallback else "LIVE DATA"
-    st.markdown(f"<span class='{badge}'>{label}</span>", unsafe_allow_html=True)
+    def _badge(live: bool, name: str) -> str:
+        cls = "badge-live" if live else "badge-cached"
+        lbl = "LIVE" if live else "DEMO"
+        return f"<span class='{cls}'>{name}: {lbl}</span>"
+    st.markdown(
+        _badge(marine_live,  "🌊 Marine") + "<br>" +
+        _badge(climate_live, "🌡️ Climate") + "<br>" +
+        _badge(argo_live,    "🔵 Argo"),
+        unsafe_allow_html=True,
+    )
 with col_ts:
     st.markdown("")
     st.markdown(

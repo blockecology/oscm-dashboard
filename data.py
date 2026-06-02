@@ -102,12 +102,12 @@ def fetch_marine(days_back: int = 30) -> pd.DataFrame:
     })
 
     if data is None:
-        return _fallback_marine(days_back)
+        return _fallback_marine(days_back), False
 
     df = pd.DataFrame(data["hourly"])
     df["time"] = pd.to_datetime(df["time"])
     df = df.set_index("time").sort_index()
-    return qc_marine(df)
+    return qc_marine(df), True
 
 
 def _fallback_marine(days_back: int) -> pd.DataFrame:
@@ -126,7 +126,7 @@ def _fallback_marine(days_back: int) -> pd.DataFrame:
     # Inject a few synthetic spikes for QC demo
     spike_idx = rng.integers(0, len(df), size=8)
     df.iloc[spike_idx, df.columns.get_loc("wave_height")] += rng.uniform(5, 10, size=8)
-    return qc_marine(df)
+    return qc_marine(df), False
 
 
 # ── API 2: Open-Meteo Archive (climate) ──────────────────────────────────────
@@ -150,13 +150,13 @@ def fetch_climate(days_back: int = 30) -> pd.DataFrame:
     })
 
     if data is None:
-        return _fallback_climate(days_back)
+        return _fallback_climate(days_back), False
 
     df = pd.DataFrame(data["daily"])
     df["time"] = pd.to_datetime(df["time"])
     df = df.set_index("time").sort_index()
     df["temp_range"] = df["temperature_2m_max"] - df["temperature_2m_min"]
-    return df
+    return df, True
 
 
 def _fallback_climate(days_back: int) -> pd.DataFrame:
@@ -173,7 +173,7 @@ def _fallback_climate(days_back: int) -> pd.DataFrame:
         "windspeed_10m_max":  np.clip(8 + 3*np.sin(t/2) + rng.standard_normal(len(index)), 0, None),
     }, index=index)
     df["temp_range"] = df["temperature_2m_max"] - df["temperature_2m_min"]
-    return df
+    return df, False
 
 
 # ── API 3: IFREMER ERDDAP — Argo float profiles ───────────────────────────
@@ -203,18 +203,18 @@ def fetch_argo(days_back: int = 90) -> pd.DataFrame:
     data = _get(url)
 
     if data is None:
-        return _fallback_argo(days_back)
+        return _fallback_argo(days_back), False
 
     table = data.get("table", {})
     if not table.get("rows"):
-        return _fallback_argo(days_back)
+        return _fallback_argo(days_back), False
 
     df = pd.DataFrame(table["rows"], columns=table["columnNames"])
     df["time"] = pd.to_datetime(df["time"])
     for col in ["latitude", "longitude", "pres", "temp", "psal"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    return qc_argo(df)
+    return qc_argo(df), True
 
 
 def _fallback_argo(days_back: int) -> pd.DataFrame:
@@ -249,4 +249,4 @@ def _fallback_argo(days_back: int) -> pd.DataFrame:
                 })
 
     df = pd.DataFrame(records)
-    return qc_argo(df)
+    return qc_argo(df), False
