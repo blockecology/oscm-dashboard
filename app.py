@@ -232,7 +232,7 @@ with tab_marine:
                       yaxis_title="m", xaxis_title=None,
                       title=dict(text="Significant Wave Height · QC-flagged spikes marked in red",
                                  font=dict(size=12)))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     col_l, col_r = st.columns(2)
 
@@ -245,7 +245,7 @@ with tab_marine:
         ))
         fig2.update_layout(**PLOT_LAYOUT, height=220, yaxis_title="s",
                            title=dict(text="Peak Wave Period", font=dict(size=12)))
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
     with col_r:
         st.markdown("<div class='section-header'>Wave Direction (polar)</div>", unsafe_allow_html=True)
@@ -273,7 +273,7 @@ with tab_marine:
                 height=220,
                 title=dict(text="Daily Mean Wave Direction", font=dict(size=12)),
             )
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width='stretch')
 
     st.markdown("<div class='section-header'>Wind Wave vs Swell</div>", unsafe_allow_html=True)
     fig4 = go.Figure()
@@ -295,7 +295,7 @@ with tab_marine:
     fig4.update_layout(**PLOT_LAYOUT, height=220, yaxis_title="m",
                        title=dict(text="Wave decomposition (Total / Wind-wave / Swell estimate)",
                                   font=dict(size=12)))
-    st.plotly_chart(fig4, use_container_width=True)
+    st.plotly_chart(fig4, width='stretch')
 
 
 # ─── TAB 2: Climate ──────────────────────────────────────────────────────────
@@ -315,7 +315,7 @@ with tab_climate:
     ))
     fig_t.update_layout(**PLOT_LAYOUT, height=260, yaxis_title="°C",
                         title=dict(text="Air temperature 2m (min / max) · OSCM", font=dict(size=12)))
-    st.plotly_chart(fig_t, use_container_width=True)
+    st.plotly_chart(fig_t, width='stretch')
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -326,7 +326,7 @@ with tab_climate:
         ))
         fig_p.update_layout(**PLOT_LAYOUT, height=220, yaxis_title="mm",
                             title=dict(text="Daily precipitation", font=dict(size=12)))
-        st.plotly_chart(fig_p, use_container_width=True)
+        st.plotly_chart(fig_p, width='stretch')
 
     with col_b:
         st.markdown("<div class='section-header'>Max Wind Speed</div>", unsafe_allow_html=True)
@@ -338,7 +338,7 @@ with tab_climate:
         ))
         fig_w.update_layout(**PLOT_LAYOUT, height=220, yaxis_title="km/h",
                             title=dict(text="Max wind speed 10m", font=dict(size=12)))
-        st.plotly_chart(fig_w, use_container_width=True)
+        st.plotly_chart(fig_w, width='stretch')
 
     # Correlation heatmap: wave height (daily mean) vs climate
     st.markdown("<div class='section-header'>Variable Correlation</div>", unsafe_allow_html=True)
@@ -354,7 +354,7 @@ with tab_climate:
     ))
     fig_c.update_layout(**PLOT_LAYOUT, height=280,
                         title=dict(text="Pearson correlation — marine & climate variables (daily)", font=dict(size=12)))
-    st.plotly_chart(fig_c, use_container_width=True)
+    st.plotly_chart(fig_c, width='stretch')
 
 
 # ─── TAB 3: Argo ─────────────────────────────────────────────────────────────
@@ -412,17 +412,24 @@ with tab_argo:
                 height=340,
                 legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=9)),
             )
-            st.plotly_chart(fig_map, use_container_width=True)
+            st.plotly_chart(fig_map, width='stretch')
 
         with col_prof:
             st.markdown("<div class='section-header'>T/S profiles</div>", unsafe_allow_html=True)
             # Latest profile per float
+            # Get the timestamp of the latest profile for each float,
+            # then filter the original DataFrame — avoids groupby/apply
+            # collapsing platform_number into the index.
+            latest_times = (
+                argo_df.groupby("platform_number")["time"].max().reset_index()
+                .rename(columns={"time": "latest_time"})
+            )
             latest_profiles = (
-                argo_df.sort_values("time")
-                .groupby("platform_number")
-                .apply(lambda g: g[g["time"] == g["time"].max()])
-                .reset_index(drop=True)
+                argo_df.merge(latest_times, on="platform_number")
+                .query("time == latest_time")
+                .drop(columns="latest_time")
                 .sort_values("pres")
+                .reset_index(drop=True)
             )
 
             fig_ts = make_subplots(rows=1, cols=2, shared_yaxes=True,
@@ -460,7 +467,7 @@ with tab_argo:
             # Style subplot title colors
             for ann in fig_ts.layout.annotations:
                 ann.font.color = "#7db5d8"
-            st.plotly_chart(fig_ts, use_container_width=True)
+            st.plotly_chart(fig_ts, width='stretch')
 
         # T-S diagram
         st.markdown("<div class='section-header'>T–S Diagram</div>", unsafe_allow_html=True)
@@ -482,7 +489,7 @@ with tab_argo:
             title=dict(text="T–S diagram · all floats coloured by pressure depth",
                        font=dict(size=12)),
         )
-        st.plotly_chart(fig_ts_diag, use_container_width=True)
+        st.plotly_chart(fig_ts_diag, width='stretch')
 
 
 # ─── TAB 4: Quality Control ──────────────────────────────────────────────────
@@ -512,7 +519,7 @@ with tab_qc:
                                   yaxis_title="% flagged bad",
                                   title=dict(text="Daily % of bad QC flags (wave height)",
                                              font=dict(size=12)))
-            st.plotly_chart(fig_qc1, use_container_width=True)
+            st.plotly_chart(fig_qc1, width='stretch')
 
     with col_q2:
         st.markdown("<div class='section-header'>Argo T/S QC summary</div>",
@@ -538,7 +545,7 @@ with tab_qc:
                                   yaxis_title="# observations",
                                   title=dict(text="Argo profile QC flag distribution",
                                              font=dict(size=12)))
-            st.plotly_chart(fig_qc2, use_container_width=True)
+            st.plotly_chart(fig_qc2, width='stretch')
 
     # QC table: worst days
     st.markdown("<div class='section-header'>Flagged observations detail</div>",
@@ -553,7 +560,7 @@ with tab_qc:
                    .highlight_max(subset=["Wave Height (m)"], color="#3a1a1a")
                    .format({"Wave Height (m)": "{:.2f}", "Wave Period (s)": "{:.1f}"}),
                 height=180,
-                use_container_width=True,
+                width='stretch',
             )
         else:
             st.success("No bad QC flags in this time window.")

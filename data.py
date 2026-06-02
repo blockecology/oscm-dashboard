@@ -187,18 +187,20 @@ def fetch_argo(days_back: int = 90) -> pd.DataFrame:
     end   = now.strftime("%Y-%m-%d")
     start = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
-    url = ("https://erddap.ifremer.fr/erddap/tabledap/ArgoFloats.json"
-           "?platform_number,time,latitude,longitude,pres,temp,psal")
-    data = _get(url, params={
-        "latitude>=":  BBOX["lat_min"],
-        "latitude<=":  BBOX["lat_max"],
-        "longitude>=": BBOX["lon_min"],
-        "longitude<=": BBOX["lon_max"],
-        "time>=":      f"{start}T00:00:00Z",
-        "time<=":      f"{end}T23:59:59Z",
-        ".limit":      500,
-        ".orderBy":    "time",
-    })
+    # ERDDAP requires variable list AND constraints in a single URL query string.
+    # Passing constraints via requests params causes double-encoding (400 error).
+    lat_min, lat_max = BBOX["lat_min"], BBOX["lat_max"]
+    lon_min, lon_max = BBOX["lon_min"], BBOX["lon_max"]
+    variables = "platform_number,time,latitude,longitude,pres,temp,psal"
+    url = (
+        "https://erddap.ifremer.fr/erddap/tabledap/ArgoFloats.json"
+        f"?{variables}"
+        f"&latitude>={lat_min}&latitude<={lat_max}"
+        f"&longitude>={lon_min}&longitude<={lon_max}"
+        f"&time>={start}T00:00:00Z&time<={end}T23:59:59Z"
+        f"&.limit=500&.orderBy=time"
+    )
+    data = _get(url)
 
     if data is None:
         return _fallback_argo(days_back)
