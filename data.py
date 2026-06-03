@@ -65,6 +65,11 @@ def qc_marine(df: pd.DataFrame) -> pd.DataFrame:
             _qc_range(df["wave_height"], 0, 20) &
             _qc_spike(df["wave_height"], 3.0)
         ).map({True: 1, False: 4})   # Argo QC: 1=good, 4=bad
+    if "sea_surface_temperature" in df.columns:
+        df["sst_qc"] = (
+            _qc_range(df["sea_surface_temperature"], 0, 40) &
+            _qc_spike(df["sea_surface_temperature"], 10.0)
+        ).map({True: 1, False: 4})   # Argo QC: 1=good, 4=bad
     if "wave_period" in df.columns:
         df["wp_qc"] = _qc_range(df["wave_period"], 1, 30).map({True: 1, False: 4})
     return df
