@@ -4,13 +4,9 @@ app.py — OSCM Cape Verde Ocean Data Dashboard
 A Streamlit application that fetches and visualises live oceanographic data
 for the Ocean Science Centre Mindelo (OSCM) region via REST APIs.
 
-Run locally:
+To run locally:
     pip install streamlit plotly requests pandas numpy
     streamlit run app.py
-
-Deploy free on Streamlit Community Cloud:
-    1. Push this repo to GitHub
-    2. Go to https://share.streamlit.io → connect repo → set app.py as entrypoint
 """
 
 import streamlit as st

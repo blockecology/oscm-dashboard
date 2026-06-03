@@ -83,7 +83,7 @@ def qc_argo(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── API 1: Open-Meteo Marine ─────────────────────────────────────────────────
 
-def fetch_marine(days_back: int = 30) -> pd.DataFrame:
+def fetch_marine(days_back: int = 30) -> tuple[pd.DataFrame, bool]:
     """
     Hourly wave & wind-wave variables for the OSCM point.
     Endpoint: https://marine-api.open-meteo.com/v1/marine
@@ -92,10 +92,17 @@ def fetch_marine(days_back: int = 30) -> pd.DataFrame:
     end   = now.strftime("%Y-%m-%d")
     start = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
+    variables = ["wave_height",
+                 "wave_direction",
+                 "wave_period",
+                 "wind_wave_height",
+                 "sea_surface_temperature",
+                 ]
+
     data = _get("https://marine-api.open-meteo.com/v1/marine", params={
         "latitude":  OSCM_LAT,
         "longitude": OSCM_LON,
-        "hourly":    "wave_height,wave_direction,wave_period,wind_wave_height",
+        "hourly": ",".join(variables),
         "start_date": start,
         "end_date":   end,
         "timezone":   "UTC",
@@ -110,7 +117,7 @@ def fetch_marine(days_back: int = 30) -> pd.DataFrame:
     return qc_marine(df), True
 
 
-def _fallback_marine(days_back: int) -> pd.DataFrame:
+def _fallback_marine(days_back: int) -> tuple[pd.DataFrame, bool]:
     """Realistic synthetic data matching real API schema — used when API is unreachable."""
     now   = datetime.now(timezone.utc).replace(tzinfo=None)
     index = pd.date_range(end=now, periods=days_back * 24, freq="h")
@@ -122,6 +129,7 @@ def _fallback_marine(days_back: int) -> pd.DataFrame:
         "wave_direction":   (180 + 40*np.sin(t/12) + 20*rng.standard_normal(len(index))) % 360,
         "wave_period":      np.clip(8 + 2*np.sin(t/8) + 0.5*rng.standard_normal(len(index)), 1, None),
         "wind_wave_height": np.clip(0.8 + 0.5*np.sin(t/4) + 0.3*rng.standard_normal(len(index)), 0, None),
+        "sea_surface_temperature": 25 + 3 * np.sin(t / 6) + 0.5 * rng.standard_normal(len(index)),
     }, index=index)
     # Inject a few synthetic spikes for QC demo
     spike_idx = rng.integers(0, len(df), size=8)
@@ -131,7 +139,7 @@ def _fallback_marine(days_back: int) -> pd.DataFrame:
 
 # ── API 2: Open-Meteo Archive (climate) ──────────────────────────────────────
 
-def fetch_climate(days_back: int = 30) -> pd.DataFrame:
+def fetch_climate(days_back: int = 30) -> tuple[pd.DataFrame, bool]:
     """
     Daily temperature, precipitation, wind for the OSCM point.
     Endpoint: https://archive-api.open-meteo.com/v1/archive
@@ -159,7 +167,7 @@ def fetch_climate(days_back: int = 30) -> pd.DataFrame:
     return df, True
 
 
-def _fallback_climate(days_back: int) -> pd.DataFrame:
+def _fallback_climate(days_back: int) -> tuple[pd.DataFrame, bool]:
     now   = datetime.now(timezone.utc).replace(tzinfo=None)
     index = pd.date_range(end=now, periods=days_back, freq="D")
     rng   = np.random.default_rng(7)
@@ -178,7 +186,7 @@ def _fallback_climate(days_back: int) -> pd.DataFrame:
 
 # ── API 3: IFREMER ERDDAP — Argo float profiles ───────────────────────────
 
-def fetch_argo(days_back: int = 90) -> pd.DataFrame:
+def fetch_argo(days_back: int = 90) -> tuple[pd.DataFrame, bool]:
     """
     Argo float T/S profiles from the Cape Verde region.
     Endpoint: https://erddap.ifremer.fr/erddap/tabledap/ArgoFloats.json
@@ -217,7 +225,7 @@ def fetch_argo(days_back: int = 90) -> pd.DataFrame:
     return qc_argo(df), True
 
 
-def _fallback_argo(days_back: int) -> pd.DataFrame:
+def _fallback_argo(days_back: int) -> tuple[pd.DataFrame, bool]:
     """Synthetic Argo profiles: 6 floats, ~5 profiles each, 50 depth levels."""
     rng          = np.random.default_rng(13)
     float_ids    = [f"39{1000+i}" for i in range(6)]
