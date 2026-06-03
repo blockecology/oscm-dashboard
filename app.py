@@ -204,6 +204,38 @@ tab_marine, tab_climate, tab_argo, tab_qc, tab_about = st.tabs([
 # ─── TAB 1: Marine ───────────────────────────────────────────────────────────
 
 with tab_marine:
+    # SST - Hourly plot
+    st.markdown("<div class='section-header'>Sea Surface Temperature — Hourly</div>", unsafe_allow_html=True)
+
+    # Colour by QC flag
+    sst_qc = marine_df["sst_qc"].fillna(1)
+    good_idx = sst_qc == 1
+    bad_idx = sst_qc != 1
+
+    fig1 = go.Figure()
+    fig1.add_trace(go.Scatter(
+        x=marine_df.index[good_idx], y=marine_df["sea_surface_temperature"][good_idx],
+        mode="lines", name="QC Good", line=dict(color=OCEAN_BLUE, width=1.2),
+    ))
+    if bad_idx.any():
+        fig1.add_trace(go.Scatter(
+            x=marine_df.index[bad_idx], y=marine_df["sea_surface_temperature"][bad_idx],
+            mode="markers", name="QC Suspect", marker=dict(color=BAD_RED, size=6, symbol="x"),
+        ))
+    # Rolling 24h mean
+    rolling = marine_df["sea_surface_temperature"].rolling(24).mean()
+    fig1.add_trace(go.Scatter(
+        x=rolling.index, y=rolling,
+        mode="lines", name="24h mean",
+        line=dict(color=WARM_AMBER, width=2, dash="dash"),
+    ))
+    fig1.update_layout(**PLOT_LAYOUT, height=280,
+                       yaxis_title="°C", xaxis_title=None,
+                       title=dict(text="Water Temperature Near the Sea Surface · QC-flagged spikes marked in red",
+                                 font=dict(size=12)))
+    st.plotly_chart(fig1, width='stretch')
+
+    # Wave Height - Hourly plot
     st.markdown("<div class='section-header'>Wave Height — Hourly</div>", unsafe_allow_html=True)
 
     # Colour by QC flag
@@ -211,47 +243,47 @@ with tab_marine:
     good_idx = wh_qc == 1
     bad_idx  = wh_qc != 1
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(
         x=marine_df.index[good_idx], y=marine_df["wave_height"][good_idx],
         mode="lines", name="QC Good", line=dict(color=OCEAN_BLUE, width=1.2),
     ))
     if bad_idx.any():
-        fig.add_trace(go.Scatter(
+        fig2.add_trace(go.Scatter(
             x=marine_df.index[bad_idx], y=marine_df["wave_height"][bad_idx],
             mode="markers", name="QC Suspect", marker=dict(color=BAD_RED, size=6, symbol="x"),
         ))
     # Rolling 24h mean
     rolling = marine_df["wave_height"].rolling(24).mean()
-    fig.add_trace(go.Scatter(
+    fig2.add_trace(go.Scatter(
         x=rolling.index, y=rolling,
         mode="lines", name="24h mean",
         line=dict(color=WARM_AMBER, width=2, dash="dash"),
     ))
-    fig.update_layout(**PLOT_LAYOUT, height=280,
-                      yaxis_title="m", xaxis_title=None,
-                      title=dict(text="Significant Wave Height · QC-flagged spikes marked in red",
+    fig2.update_layout(**PLOT_LAYOUT, height=280,
+                       yaxis_title="m", xaxis_title=None,
+                       title=dict(text="Wave Height · QC-flagged spikes marked in red",
                                  font=dict(size=12)))
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig2, width='stretch')
 
     col_l, col_r = st.columns(2)
 
     with col_l:
         st.markdown("<div class='section-header'>Wave Period</div>", unsafe_allow_html=True)
-        fig2 = go.Figure(go.Scatter(
+        fig3 = go.Figure(go.Scatter(
             x=marine_df.index, y=marine_df["wave_period"],
             mode="lines", line=dict(color=WAVE_TEAL, width=1.2), fill="tozeroy",
             fillcolor="rgba(46,196,182,0.12)",
         ))
-        fig2.update_layout(**PLOT_LAYOUT, height=220, yaxis_title="s",
+        fig3.update_layout(**PLOT_LAYOUT, height=220, yaxis_title="s",
                            title=dict(text="Peak Wave Period", font=dict(size=12)))
-        st.plotly_chart(fig2, width='stretch')
+        st.plotly_chart(fig3, width='stretch')
 
     with col_r:
         st.markdown("<div class='section-header'>Wave Direction (polar)</div>", unsafe_allow_html=True)
         if "wave_direction" in marine_df.columns:
             daily_dir = marine_df["wave_direction"].resample("D").mean()
-            fig3 = go.Figure(go.Barpolar(
+            fig4 = go.Figure(go.Barpolar(
                 r=[1]*len(daily_dir),
                 theta=daily_dir.values,
                 width=8,
@@ -260,7 +292,7 @@ with tab_marine:
                 marker_line_width=0.5,
                 opacity=0.8,
             ))
-            fig3.update_layout(
+            fig4.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="#0b1d2e",
                 font=dict(color="#dce9f5", size=10),
@@ -273,29 +305,29 @@ with tab_marine:
                 height=220,
                 title=dict(text="Daily Mean Wave Direction", font=dict(size=12)),
             )
-            st.plotly_chart(fig3, width='stretch')
+            st.plotly_chart(fig4, width='stretch')
 
     st.markdown("<div class='section-header'>Wind Wave vs Swell</div>", unsafe_allow_html=True)
-    fig4 = go.Figure()
-    fig4.add_trace(go.Scatter(
+    fig5 = go.Figure()
+    fig5.add_trace(go.Scatter(
         x=marine_df.index, y=marine_df["wave_height"],
         mode="lines", name="Total wave height", line=dict(color=OCEAN_BLUE, width=1),
     ))
     if "wind_wave_height" in marine_df.columns:
-        fig4.add_trace(go.Scatter(
+        fig5.add_trace(go.Scatter(
             x=marine_df.index, y=marine_df["wind_wave_height"],
             mode="lines", name="Wind-wave component", line=dict(color=WARM_AMBER, width=1),
             fill="tozeroy", fillcolor="rgba(244,162,97,0.08)",
         ))
         swell = marine_df["wave_height"] - marine_df["wind_wave_height"].clip(lower=0)
-        fig4.add_trace(go.Scatter(
+        fig5.add_trace(go.Scatter(
             x=marine_df.index, y=swell.clip(lower=0),
             mode="lines", name="Swell estimate", line=dict(color=WAVE_TEAL, width=1),
         ))
-    fig4.update_layout(**PLOT_LAYOUT, height=220, yaxis_title="m",
+    fig5.update_layout(**PLOT_LAYOUT, height=220, yaxis_title="m",
                        title=dict(text="Wave decomposition (Total / Wind-wave / Swell estimate)",
                                   font=dict(size=12)))
-    st.plotly_chart(fig4, width='stretch')
+    st.plotly_chart(fig5, width='stretch')
 
 
 # ─── TAB 2: Climate ──────────────────────────────────────────────────────────
