@@ -124,7 +124,7 @@ with st.sidebar:
 # ═════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_all(days: int):
+def load_all(days: int, version: int = 2):
     marine,  marine_live  = fetch_marine(days)
     climate, climate_live = fetch_climate(days)
     argo,    argo_live    = fetch_argo(max(days, 60))  # Argo needs a wider window
