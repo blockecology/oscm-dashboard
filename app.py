@@ -14,7 +14,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import pandas as pd
-import numpy as np
 from datetime import datetime, timezone
 
 from data import fetch_marine, fetch_climate, fetch_argo, OSCM_LAT, OSCM_LON, BBOX
@@ -95,7 +94,8 @@ BAD_RED      = "#f87171"
 with st.sidebar:
     st.markdown("## 🌊 OSCM Data Explorer")
     st.markdown(
-        "**Ocean Science Centre Mindelo** · São Vicente, Cape Verde  \n"
+        "**Ocean Science Centre Mindelo** \n" 
+        "São Vicente, Cape Verde  \n"
         f"`{OSCM_LAT}°N, {abs(OSCM_LON)}°W`",
     )
     st.divider()
@@ -112,7 +112,7 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "<div class='caption'>Built as a REST API portfolio project "
-        "for a GEOMAR Data Scientist application. "
+        "for DTO-Ocean_CofE Data Scientist application at GEOMAR. "
         "All data via open, unauthenticated APIs. "
         "QC follows Argo quality control conventions.</div>",
         unsafe_allow_html=True,
@@ -140,7 +140,7 @@ with st.spinner("Fetching data from APIs…"):
 
 col_title, col_badge, col_ts = st.columns([3, 1.5, 2])
 with col_title:
-    st.markdown("# OSCM Cape Verde · Ocean Data Explorer")
+    st.markdown("# OSCM Data Explorer")
 with col_badge:
     st.markdown("")
     def _badge(live: bool, name: str) -> str:
@@ -172,14 +172,14 @@ st.divider()
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 mean_wh   = marine_df["wave_height"].mean()
-max_wh    = marine_df["wave_height"].max()
+mean_sst    = marine_df["sea_surface_temperature"].mean()
 mean_temp = climate_df["temperature_2m_max"].mean()
 total_prec = climate_df["precipitation_sum"].sum()
-n_floats  = argo_df["platform_number"].nunique() if len(argo_df) > 0 else 0
+n_floats  = argo_df["platform_number"].nunique()
 qc_pass   = (marine_df.get("wh_qc", pd.Series([1]*len(marine_df))) == 1).mean() * 100
 
 k1.metric("Mean Wave Height", f"{mean_wh:.2f} m")
-k2.metric("Max Wave Height",  f"{max_wh:.2f} m")
+k2.metric("Mean SST",  f"{mean_sst:.1f} °C")
 k3.metric("Mean Air Temp",    f"{mean_temp:.1f} °C")
 k4.metric("Total Precip",     f"{total_prec:.1f} mm")
 k5.metric("Argo Floats",      f"{n_floats}")
