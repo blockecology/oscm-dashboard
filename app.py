@@ -172,14 +172,14 @@ st.divider()
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 mean_wh   = marine_df["wave_height"].mean()
-mean_sst    = marine_df["sea_surface_temperature"].mean()
+mean_sst    = marine_df["sea_surface_temperature"].mean() if "sea_surface_temperature" in marine_df.columns else None
 mean_temp = climate_df["temperature_2m_max"].mean()
 total_prec = climate_df["precipitation_sum"].sum()
 n_floats  = argo_df["platform_number"].nunique()
 qc_pass   = (marine_df.get("wh_qc", pd.Series([1]*len(marine_df))) == 1).mean() * 100
 
 k1.metric("Mean Wave Height", f"{mean_wh:.2f} m")
-k2.metric("Mean SST",  f"{mean_sst:.1f} °C")
+k2.metric("Mean SST",  f"{mean_sst:.1f} °C" if mean_sst is not None else "N/A")
 k3.metric("Mean Air Temp",    f"{mean_temp:.1f} °C")
 k4.metric("Total Precip",     f"{total_prec:.1f} mm")
 k5.metric("Argo Floats",      f"{n_floats}")
@@ -207,33 +207,37 @@ with tab_marine:
     # SST - Hourly plot
     st.markdown("<div class='section-header'>Sea Surface Temperature — Hourly</div>", unsafe_allow_html=True)
 
-    # Colour by QC flag
-    sst_qc = marine_df["sst_qc"].fillna(1)
-    good_idx = sst_qc == 1
-    bad_idx = sst_qc != 1
+    if "sea_surface_temperature" in marine_df.columns:
+        # Colour by QC flag
+        sst_qc = marine_df["sst_qc"].fillna(1)
+        good_idx = sst_qc == 1
+        bad_idx = sst_qc != 1
 
-    fig1 = go.Figure()
-    fig1.add_trace(go.Scatter(
-        x=marine_df.index[good_idx], y=marine_df["sea_surface_temperature"][good_idx],
-        mode="lines", name="QC Good", line=dict(color=OCEAN_BLUE, width=1.2),
-    ))
-    if bad_idx.any():
+        fig1 = go.Figure()
         fig1.add_trace(go.Scatter(
-            x=marine_df.index[bad_idx], y=marine_df["sea_surface_temperature"][bad_idx],
-            mode="markers", name="QC Suspect", marker=dict(color=BAD_RED, size=6, symbol="x"),
+            x=marine_df.index[good_idx], y=marine_df["sea_surface_temperature"][good_idx],
+            mode="lines", name="QC Good", line=dict(color=OCEAN_BLUE, width=1.2),
         ))
-    # Rolling 24h mean
-    rolling = marine_df["sea_surface_temperature"].rolling(24).mean()
-    fig1.add_trace(go.Scatter(
-        x=rolling.index, y=rolling,
-        mode="lines", name="24h mean",
-        line=dict(color=WARM_AMBER, width=2, dash="dash"),
-    ))
-    fig1.update_layout(**PLOT_LAYOUT, height=280,
-                       yaxis_title="°C", xaxis_title=None,
-                       title=dict(text="Water Temperature Near the Sea Surface · QC-flagged spikes marked in red",
-                                 font=dict(size=12)))
-    st.plotly_chart(fig1, width='stretch')
+        if bad_idx.any():
+            fig1.add_trace(go.Scatter(
+                x=marine_df.index[bad_idx], y=marine_df["sea_surface_temperature"][bad_idx],
+                mode="markers", name="QC Suspect", marker=dict(color=BAD_RED, size=6, symbol="x"),
+            ))
+        # Rolling 24h mean
+        rolling = marine_df["sea_surface_temperature"].rolling(24).mean()
+        fig1.add_trace(go.Scatter(
+            x=rolling.index, y=rolling,
+            mode="lines", name="24h mean",
+            line=dict(color=WARM_AMBER, width=2, dash="dash"),
+        ))
+        fig1.update_layout(**PLOT_LAYOUT, height=280,
+                           yaxis_title="°C", xaxis_title=None,
+                           title=dict(text="Water Temperature Near the Sea Surface · QC-flagged spikes marked in red",
+                                      font=dict(size=12)))
+        st.plotly_chart(fig1, width='stretch')
+
+    else:
+        st.info("Sea surface temperature not available for this time window.")
 
     # Wave Height - Hourly plot
     st.markdown("<div class='section-header'>Wave Height — Hourly</div>", unsafe_allow_html=True)
