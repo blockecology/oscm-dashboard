@@ -681,8 +681,8 @@ with tab_about:
     st.markdown("""
 ## About this dashboard
 
-This application was built as a REST API skills demonstration for DTO-Ocean_CofE 
-**Data Scientist position at [GEOMAR Helmholtz Centre for Ocean Research Kiel](https://www.geomar.de)**.
+This application was built as a REST API skills demonstration for **DTO-Ocean_CofE 
+Data Scientist** position at [GEOMAR Helmholtz Centre for Ocean Research Kiel](https://www.geomar.de)**.
 
 ### What it demonstrates
 
