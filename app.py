@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import pandas as pd
+import numpy as np
 from datetime import datetime, timezone
 
 from data import fetch_marine, fetch_climate, fetch_argo, OSCM_LAT, OSCM_LON, BBOX
@@ -192,11 +193,12 @@ st.markdown("")
 # TAB LAYOUT
 # ═════════════════════════════════════════════════════════════════════════════
 
-tab_marine, tab_climate, tab_argo, tab_qc, tab_about = st.tabs([
+tab_marine, tab_climate, tab_argo, tab_qc, tab_anomaly, tab_about = st.tabs([
     "🌊 Marine Conditions",
     "🌡️ Climate",
     "🔵 Argo Floats",
     "✅ Quality Control",
+    "🤖 Anomaly Detection",
     "ℹ️ About",
 ])
 
@@ -675,7 +677,350 @@ with tab_qc:
     else:
         st.info("No Argo data available.")
 
-# ─── TAB 5: About ────────────────────────────────────────────────────────────
+
+# ─── TAB 5: Anomaly Detection ────────────────────────────────────────────────
+
+with tab_anomaly:
+    st.markdown(
+        "Two complementary unsupervised ML methods detect anomalies in the marine time series. "
+        "**Isolation Forest** flags unusual multivariate combinations — e.g. low wave height "
+        "paired with an unusually long period. "
+        "**LSTM Autoencoder** learns the normal 24-hour temporal pattern and flags timesteps "
+        "where reconstruction error is high — catching contextual anomalies that look "
+        "plausible in isolation but break the expected sequence. "
+        "Points flagged by **both** methods are the highest-confidence anomalies."
+    )
+
+    # ── Run ML (cached separately so it only re-runs when data changes) ───────
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def run_anomaly_detection(marine_hash: int, version: int = 1):
+        """
+        Fits Isolation Forest and trains LSTM Autoencoder on the marine time series.
+        Cached by a hash of the DataFrame so it re-runs only when data changes.
+        Returns a dict of results rather than complex objects, which Streamlit
+        can serialise cleanly for caching.
+        """
+        import os
+        os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+        from sklearn.ensemble import IsolationForest
+        from sklearn.preprocessing import StandardScaler
+
+        df = marine_df.copy()
+
+        # ── Feature engineering ───────────────────────────────────────────────
+        core_vars = [v for v in ["wave_height", "wave_period", "sea_surface_temperature"]
+                     if v in df.columns]
+
+        for var in core_vars:
+            df[f"{var}_roll_mean"] = df[var].rolling(6, min_periods=1).mean()
+            df[f"{var}_roll_std"]  = df[var].rolling(6, min_periods=1).std().fillna(0)
+            df[f"{var}_diff"]      = df[var].diff().fillna(0)
+
+        df["hour_sin"] = np.sin(2 * np.pi * df.index.hour / 24)
+        df["hour_cos"] = np.cos(2 * np.pi * df.index.hour / 24)
+
+        features = (
+            core_vars +
+            [f"{v}_roll_mean" for v in core_vars] +
+            [f"{v}_roll_std"  for v in core_vars] +
+            [f"{v}_diff"      for v in core_vars] +
+            ["hour_sin", "hour_cos"]
+        )
+        features = [f for f in features if f in df.columns]
+
+        df_feat  = df[features].dropna()
+        scaler   = StandardScaler()
+        X_scaled = scaler.fit_transform(df_feat.values)
+
+        # ── Isolation Forest ──────────────────────────────────────────────────
+        iso = IsolationForest(n_estimators=200, contamination=0.02,
+                              random_state=42, n_jobs=-1)
+        iso.fit(X_scaled)
+        iso_scores  = -iso.score_samples(X_scaled)
+        iso_anomaly = pd.Series(iso.predict(X_scaled) == -1, index=df_feat.index)
+
+        # ── LSTM Autoencoder ──────────────────────────────────────────────────
+        lstm_available = False
+        lstm_anomaly   = pd.Series(False, index=df_feat.index)
+        lstm_scores    = pd.Series(np.nan, index=df_feat.index)
+        lstm_threshold = None
+
+        try:
+            import tensorflow as tf
+            tf.get_logger().setLevel("ERROR")
+            from tensorflow import keras
+
+            WINDOW = 24
+            X_seq  = np.array([X_scaled[i:i+WINDOW]
+                                for i in range(len(X_scaled) - WINDOW + 1)])
+            n_feat = X_scaled.shape[1]
+
+            inp = keras.Input(shape=(WINDOW, n_feat))
+            x   = keras.layers.LSTM(32, activation="tanh",
+                                     return_sequences=False)(inp)
+            x   = keras.layers.RepeatVector(WINDOW)(x)
+            x   = keras.layers.LSTM(32, activation="tanh",
+                                     return_sequences=True)(x)
+            out = keras.layers.TimeDistributed(
+                      keras.layers.Dense(n_feat))(x)
+
+            ae = keras.Model(inp, out)
+            ae.compile(optimizer="adam", loss="mse")
+            ae.fit(X_seq, X_seq, epochs=20, batch_size=64,
+                   validation_split=0.1, verbose=0,
+                   callbacks=[keras.callbacks.EarlyStopping(
+                       patience=3, restore_best_weights=True,
+                       monitor="val_loss")])
+
+            X_pred       = ae.predict(X_seq, verbose=0)
+            mse          = np.mean((X_seq - X_pred) ** 2, axis=(1, 2))
+            scores_arr   = np.full(len(df_feat), np.nan)
+            scores_arr[WINDOW-1:] = mse
+
+            lstm_threshold = float(np.nanpercentile(scores_arr, 95))
+            lstm_scores    = pd.Series(scores_arr, index=df_feat.index)
+            lstm_anomaly   = pd.Series(scores_arr > lstm_threshold,
+                                       index=df_feat.index)
+            lstm_available = True
+
+        except Exception as e:
+            pass   # graceful fallback: show IF results only
+
+        combined = iso_anomaly & (lstm_anomaly if lstm_available else iso_anomaly)
+
+        return {
+            "index":          df_feat.index,
+            "core_vars":      core_vars,
+            "df_feat":        df_feat[core_vars],           # values only
+            "iso_scores":     pd.Series(iso_scores, index=df_feat.index),
+            "iso_anomaly":    iso_anomaly,
+            "lstm_scores":    lstm_scores,
+            "lstm_anomaly":   lstm_anomaly,
+            "lstm_threshold": lstm_threshold,
+            "lstm_available": lstm_available,
+            "combined":       combined,
+        }
+
+    # ── Run button + session state ───────────────────────────────────────────
+    # ML training is expensive (~30s for LSTM), so we only run it on demand.
+    # st.session_state persists values across Streamlit reruns within the same
+    # browser session, so results stay visible after the button is clicked.
+
+    marine_hash = hash((
+        len(marine_df),
+        str(marine_df.index.min()),
+        str(marine_df.index.max()),
+        round(float(marine_df["wave_height"].iloc[0]), 3),
+    ))
+
+    # Initialise session state keys on first load
+    if "anomaly_res" not in st.session_state:
+        st.session_state.anomaly_res  = None
+        st.session_state.anomaly_hash = None
+
+    col_btn, col_note = st.columns([1, 4])
+    with col_btn:
+        run_clicked = st.button(
+            "▶ Run anomaly detection",
+            type="primary",
+            use_container_width=True,
+        )
+    with col_note:
+        if st.session_state.anomaly_res is None:
+            st.info("Click the button to fit the models and detect anomalies.")
+        elif st.session_state.anomaly_hash != marine_hash:
+            st.warning("The underlying data has changed. Re-run to update results.")
+        else:
+            st.success("Results are up to date.")
+
+    if run_clicked:
+        with st.spinner("Running anomaly detection… (first run may take ~30s for LSTM training)"):
+            st.session_state.anomaly_res  = run_anomaly_detection(marine_hash)
+            st.session_state.anomaly_hash = marine_hash
+
+    # Only show results if the model has been run at least once
+    if st.session_state.anomaly_res is None:
+        st.stop()
+
+    res = st.session_state.anomaly_res
+
+    iso_anomaly    = res["iso_anomaly"]
+    lstm_anomaly   = res["lstm_anomaly"]
+    lstm_available = res["lstm_available"]
+    combined       = res["combined"]
+    iso_scores     = res["iso_scores"]
+    lstm_scores    = res["lstm_scores"]
+    lstm_threshold = res["lstm_threshold"]
+    df_feat        = res["df_feat"]
+    core_vars      = res["core_vars"]
+
+    # ── Summary KPIs ──────────────────────────────────────────────────────────
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("Isolation Forest flags",   f"{iso_anomaly.sum()}")
+    a2.metric("LSTM Autoencoder flags",
+              f"{lstm_anomaly.sum()}" if lstm_available else "N/A (no TF)")
+    a3.metric("Combined (both methods)",  f"{combined.sum()}")
+    a4.metric("High-confidence rate",
+              f"{combined.mean()*100:.1f} %")
+
+    # ── Per-variable time series ───────────────────────────────────────────────
+    label_map = {
+        "wave_height":             "Wave Height (m)",
+        "wave_period":             "Wave Period (s)",
+        "sea_surface_temperature": "SST (°C)",
+    }
+    COLORS_AN = {
+        "normal":   "#3b9edd",
+        "iso":      "#f4a261",
+        "lstm":     "#2ec4b6",
+        "combined": "#f87171",
+    }
+
+    for var in core_vars:
+        st.markdown(
+            f"<div class='section-header'>{label_map.get(var, var)} — anomalies</div>",
+            unsafe_allow_html=True,
+        )
+        vals     = df_feat[var]
+        fig_an   = go.Figure()
+
+        # Normal points
+        normal = ~iso_anomaly
+        fig_an.add_trace(go.Scatter(
+            x=vals.index[normal], y=vals[normal],
+            mode="lines", name="Normal",
+            line=dict(color=COLORS_AN["normal"], width=1),
+        ))
+        # Isolation Forest only
+        iso_only = iso_anomaly & ~(lstm_anomaly if lstm_available else iso_anomaly)
+        if iso_only.any():
+            fig_an.add_trace(go.Scatter(
+                x=vals.index[iso_only], y=vals[iso_only],
+                mode="markers", name=f"Isolation Forest ({iso_only.sum()})",
+                marker=dict(color=COLORS_AN["iso"], size=7, symbol="triangle-up"),
+            ))
+        # LSTM only
+        if lstm_available:
+            lstm_only = lstm_anomaly & ~iso_anomaly
+            if lstm_only.any():
+                fig_an.add_trace(go.Scatter(
+                    x=vals.index[lstm_only], y=vals[lstm_only],
+                    mode="markers", name=f"LSTM only ({lstm_only.sum()})",
+                    marker=dict(color=COLORS_AN["lstm"], size=7,
+                                symbol="triangle-down"),
+                ))
+        # Combined — both methods
+        if combined.any():
+            fig_an.add_trace(go.Scatter(
+                x=vals.index[combined], y=vals[combined],
+                mode="markers", name=f"Both methods ({combined.sum()})",
+                marker=dict(color=COLORS_AN["combined"], size=10,
+                            symbol="x", line=dict(width=2)),
+            ))
+
+        fig_an.update_layout(
+            **PLOT_LAYOUT, height=240,
+            yaxis_title=label_map.get(var, var),
+            legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
+                        font=dict(size=9)),
+        )
+        st.plotly_chart(fig_an, width="stretch")
+
+    # ── Score panels ──────────────────────────────────────────────────────────
+    st.markdown("<div class='section-header'>Anomaly scores over time</div>",
+                unsafe_allow_html=True)
+
+    n_score_cols = 2 if lstm_available else 1
+    score_cols   = st.columns(n_score_cols)
+
+    with score_cols[0]:
+        iso_thresh_val = float(np.percentile(iso_scores, 98))
+        fig_iso = go.Figure()
+        fig_iso.add_trace(go.Scatter(
+            x=iso_scores.index, y=iso_scores,
+            mode="lines", line=dict(color=COLORS_AN["iso"], width=0.9),
+            fill="tozeroy", fillcolor="rgba(244,162,97,0.08)",
+            name="Score",
+        ))
+        fig_iso.add_hline(
+            y=iso_thresh_val, line_dash="dash",
+            line_color=COLORS_AN["combined"], line_width=1.2,
+            annotation_text="Threshold", annotation_font_color="#dce9f5",
+        )
+        fig_iso.update_layout(
+            **PLOT_LAYOUT, height=220,
+            yaxis_title="Score",
+            title=dict(text="Isolation Forest — anomaly score (higher = more anomalous)",
+                       font=dict(size=11)),
+        )
+        st.plotly_chart(fig_iso, width="stretch")
+
+    if lstm_available and lstm_threshold is not None:
+        with score_cols[1]:
+            fig_lstm = go.Figure()
+            fig_lstm.add_trace(go.Scatter(
+                x=lstm_scores.index, y=lstm_scores,
+                mode="lines", line=dict(color=COLORS_AN["lstm"], width=0.9),
+                fill="tozeroy", fillcolor="rgba(46,196,182,0.08)",
+                name="Reconstruction error",
+            ))
+            fig_lstm.add_hline(
+                y=lstm_threshold, line_dash="dash",
+                line_color=COLORS_AN["combined"], line_width=1.2,
+                annotation_text="p95 threshold",
+                annotation_font_color="#dce9f5",
+            )
+            fig_lstm.update_layout(
+                **PLOT_LAYOUT, height=220,
+                yaxis_title="MSE",
+                title=dict(
+                    text="LSTM Autoencoder — reconstruction error (higher = more anomalous)",
+                    font=dict(size=11)),
+            )
+            st.plotly_chart(fig_lstm, width="stretch")
+
+    # ── Flagged observations table ────────────────────────────────────────────
+    st.markdown("<div class='section-header'>Highest-confidence anomalies (both methods)</div>",
+                unsafe_allow_html=True)
+
+    if combined.sum() > 0:
+        top = df_feat[combined].copy()
+        top["iso_score"] = iso_scores[combined]
+        if lstm_available:
+            top["lstm_mse"] = lstm_scores[combined]
+        top = top.sort_values("iso_score", ascending=False)
+        top.index = top.index.strftime("%Y-%m-%d %H:%M UTC")
+        rename = {v: label_map.get(v, v) for v in core_vars}
+        rename.update({"iso_score": "IF Score", "lstm_mse": "LSTM MSE"})
+        top = top.rename(columns=rename)
+        fmt = {label_map.get(v, v): "{:.3f}" for v in core_vars}
+        fmt.update({"IF Score": "{:.3f}", "LSTM MSE": "{:.4f}"})
+        st.dataframe(
+            top.style.format(fmt, na_rep="—")
+               .background_gradient(subset=["IF Score"],
+                                    cmap="Reds", vmin=0),
+            width="stretch",
+        )
+        st.markdown(
+            "<div class='caption'>These are the observations flagged as anomalous by both "
+            "Isolation Forest and the LSTM Autoencoder. Sorted by Isolation Forest score "
+            "(higher = more anomalous in the multivariate feature space). "
+            "In a real operational pipeline, these would be prioritised for manual inspection "
+            "or fed into a downstream QC workflow.</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.success("No high-confidence anomalies detected in this time window.")
+
+    if not lstm_available:
+        st.info(
+            "LSTM Autoencoder results are not shown because TensorFlow is not installed "
+            "in this environment. Add `tensorflow` to requirements.txt and redeploy to enable it."
+        )
+
+
+# ─── TAB 6: About ────────────────────────────────────────────────────────────
 
 with tab_about:
     st.markdown("""
