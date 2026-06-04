@@ -683,10 +683,10 @@ with tab_qc:
 with tab_anomaly:
     st.markdown(
         "Two complementary unsupervised ML methods detect anomalies in the marine time series. "
-        "**Isolation Forest** flags unusual multivariate combinations — e.g. low wave height "
+        "**Isolation Forest** flags unusual multivariate combinations, such as low wave height "
         "paired with an unusually long period. "
         "**LSTM Autoencoder** learns the normal 24-hour temporal pattern and flags timesteps "
-        "where reconstruction error is high — catching contextual anomalies that look "
+        "where reconstruction error is high, catching contextual anomalies that look "
         "plausible in isolation but break the expected sequence. "
         "Points flagged by **both** methods are the highest-confidence anomalies."
     )
@@ -920,7 +920,7 @@ with tab_anomaly:
             ))
 
         fig_an.update_layout(
-            **PLOT_LAYOUT, height=240,
+            height=240,
             yaxis_title=label_map.get(var, var),
             legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
                         font=dict(size=9)),
