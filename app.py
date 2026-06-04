@@ -527,7 +527,6 @@ with tab_argo:
         )
         st.plotly_chart(fig_ts_diag, width='stretch')
 
-
 # ─── TAB 4: Quality Control ──────────────────────────────────────────────────
 
 with tab_qc:
@@ -537,70 +536,144 @@ with tab_qc:
         "Flag values: **1** = Good data · **4** = Bad data (suspect)."
     )
 
-    col_q1, col_q2 = st.columns(2)
+    # ── Section 1: Marine QC summary ─────────────────────────────────────────
+    st.markdown("<div class='section-header'>Marine QC — daily % flagged bad</div>",
+                unsafe_allow_html=True)
 
-    with col_q1:
-        st.markdown("<div class='section-header'>Wave height QC flags over time</div>",
-                    unsafe_allow_html=True)
-        if "wh_qc" in marine_df.columns:
-            daily_qc = marine_df["wh_qc"].resample("D").apply(
+    # Build one time-series bar chart per marine QC variable that exists
+    marine_qc_vars = [
+        ("wh_qc", "Wave Height"),
+        ("sst_qc", "Sea Surface Temperature"),
+        ("wp_qc", "Wave Period"),
+    ]
+    available_marine_qc = [(col, label) for col, label in marine_qc_vars
+                           if col in marine_df.columns]
+
+    if available_marine_qc:
+        n_cols = len(available_marine_qc)
+        qc_cols = st.columns(n_cols)
+        for i, (col, label) in enumerate(available_marine_qc):
+            daily_pct = marine_df[col].resample("D").apply(
                 lambda x: (x == 4).sum() / len(x) * 100 if len(x) > 0 else 0
             )
-            colors_qc = [BAD_RED if v > 5 else GOOD_GREEN for v in daily_qc]
-            fig_qc1 = go.Figure(go.Bar(
-                x=daily_qc.index, y=daily_qc.values,
-                marker_color=colors_qc, marker_line_width=0,
+            bar_colors = [BAD_RED if v > 5 else GOOD_GREEN for v in daily_pct]
+            fig = go.Figure(go.Bar(
+                x=daily_pct.index, y=daily_pct.values,
+                marker_color=bar_colors, marker_line_width=0,
             ))
-            fig_qc1.update_layout(**PLOT_LAYOUT, height=220,
-                                  yaxis_title="% flagged bad",
-                                  title=dict(text="Daily % of bad QC flags (wave height)",
-                                             font=dict(size=12)))
-            st.plotly_chart(fig_qc1, width='stretch')
+            fig.update_layout(**PLOT_LAYOUT, height=200,
+                              yaxis_title="% flagged",
+                              title=dict(text=label, font=dict(size=12)))
+            with qc_cols[i]:
+                st.plotly_chart(fig, width='stretch')
+    else:
+        st.info("No marine QC columns available.")
 
-    with col_q2:
-        st.markdown("<div class='section-header'>Argo T/S QC summary</div>",
-                    unsafe_allow_html=True)
-        if len(argo_df) > 0 and "temp_qc" in argo_df.columns:
-            qc_summary = pd.DataFrame({
-                "Variable":  ["Temperature", "Salinity"],
-                "Good (1)":  [
-                    (argo_df["temp_qc"] == 1).sum(),
-                    (argo_df.get("psal_qc", pd.Series([1]*len(argo_df))) == 1).sum(),
-                ],
-                "Bad (4)": [
-                    (argo_df["temp_qc"] == 4).sum(),
-                    (argo_df.get("psal_qc", pd.Series([1]*len(argo_df))) == 4).sum(),
-                ],
-            })
-            fig_qc2 = go.Figure()
-            fig_qc2.add_trace(go.Bar(name="Good (1)", x=qc_summary["Variable"],
+    # ── Section 2: Argo QC summary ───────────────────────────────────────────
+    st.markdown("<div class='section-header'>Argo QC — flag distribution</div>",
+                unsafe_allow_html=True)
+
+    if len(argo_df) > 0 and "temp_qc" in argo_df.columns:
+        argo_qc_vars = [
+            ("temp_qc", "Temperature"),
+            ("psal_qc", "Salinity"),
+        ]
+        qc_summary = pd.DataFrame([
+            {
+                "Variable": label,
+                "Good (1)": (argo_df[col] == 1).sum(),
+                "Bad (4)": (argo_df[col] == 4).sum(),
+            }
+            for col, label in argo_qc_vars if col in argo_df.columns
+        ])
+        fig_argo_qc = go.Figure()
+        fig_argo_qc.add_trace(go.Bar(name="Good (1)", x=qc_summary["Variable"],
                                      y=qc_summary["Good (1)"], marker_color=GOOD_GREEN))
-            fig_qc2.add_trace(go.Bar(name="Bad (4)",  x=qc_summary["Variable"],
-                                     y=qc_summary["Bad (4)"],  marker_color=BAD_RED))
-            fig_qc2.update_layout(**PLOT_LAYOUT, height=220, barmode="stack",
+        fig_argo_qc.add_trace(go.Bar(name="Bad (4)", x=qc_summary["Variable"],
+                                     y=qc_summary["Bad (4)"], marker_color=BAD_RED))
+        fig_argo_qc.update_layout(**PLOT_LAYOUT, height=220, barmode="stack",
                                   yaxis_title="# observations",
                                   title=dict(text="Argo profile QC flag distribution",
                                              font=dict(size=12)))
-            st.plotly_chart(fig_qc2, width='stretch')
+        st.plotly_chart(fig_argo_qc, width='stretch')
+    else:
+        st.info("No Argo QC data available.")
 
-    # QC table: worst days
-    st.markdown("<div class='section-header'>Flagged observations detail</div>",
+    # ── Section 3: Flagged marine observations ───────────────────────────────
+    st.markdown("<div class='section-header'>Flagged marine observations</div>",
                 unsafe_allow_html=True)
-    if "wh_qc" in marine_df.columns:
-        bad = marine_df[marine_df["wh_qc"] == 4][["wave_height","wave_period","wh_qc"]].copy()
-        bad.index = bad.index.strftime("%Y-%m-%d %H:%M")
-        bad.columns = ["Wave Height (m)", "Wave Period (s)", "QC Flag"]
-        if len(bad) > 0:
+
+    # Collect all hourly rows where ANY marine QC flag == 4
+    marine_flag_cols = {
+        "wh_qc": "wave_height",
+        "sst_qc": "sea_surface_temperature",
+        "wp_qc": "wave_period",
+    }
+    # Only keep columns that are actually present
+    present_flag_cols = {k: v for k, v in marine_flag_cols.items() if k in marine_df.columns}
+    present_value_cols = [v for v in present_flag_cols.values() if v in marine_df.columns]
+
+    if present_flag_cols:
+        any_bad = (marine_df[[*present_flag_cols]] == 4).any(axis=1)
+        bad_marine = marine_df[any_bad][present_value_cols + list(present_flag_cols.keys())].copy()
+        bad_marine.index = bad_marine.index.strftime("%Y-%m-%d %H:%M")
+        # Rename for display
+        rename_map = {
+            "wave_height": "Wave Height (m)",
+            "sea_surface_temperature": "SST (°C)",
+            "wave_period": "Wave Period (s)",
+            "wh_qc": "Wave Ht QC",
+            "sst_qc": "SST QC",
+            "wp_qc": "Wave Period QC",
+        }
+        bad_marine = bad_marine.rename(columns=rename_map)
+        if len(bad_marine) > 0:
+            value_display_cols = [rename_map[v] for v in present_value_cols]
+            fmt = {c: "{:.2f}" for c in value_display_cols}
             st.dataframe(
-                bad.style
-                   .highlight_max(subset=["Wave Height (m)"], color="#3a1a1a")
-                   .format({"Wave Height (m)": "{:.2f}", "Wave Period (s)": "{:.1f}"}),
-                height=180,
+                bad_marine.style.format(fmt, na_rep="—"),
+                height=200,
                 width='stretch',
             )
         else:
-            st.success("No bad QC flags in this time window.")
+            st.success("No bad marine QC flags in this time window.")
 
+    # ── Section 4: Flagged Argo observations ─────────────────────────────────
+    st.markdown("<div class='section-header'>Flagged Argo observations</div>",
+                unsafe_allow_html=True)
+
+    argo_flag_cols = {"temp_qc": "temp", "psal_qc": "psal"}
+    present_argo_flags = {k: v for k, v in argo_flag_cols.items() if k in argo_df.columns}
+
+    if len(argo_df) > 0 and present_argo_flags:
+        any_bad_argo = (argo_df[[*present_argo_flags]] == 4).any(axis=1)
+        bad_argo = argo_df[any_bad_argo][
+            ["platform_number", "time", "pres"] +
+            [v for v in present_argo_flags.values() if v in argo_df.columns] +
+            list(present_argo_flags.keys())
+            ].copy()
+        bad_argo["time"] = pd.to_datetime(bad_argo["time"]).dt.strftime("%Y-%m-%d %H:%M")
+        bad_argo = bad_argo.rename(columns={
+            "platform_number": "Float ID",
+            "time": "Time (UTC)",
+            "pres": "Pressure (dbar)",
+            "temp": "Temp (°C)",
+            "psal": "Salinity (PSU)",
+            "temp_qc": "Temp QC",
+            "psal_qc": "Sal QC",
+        })
+        if len(bad_argo) > 0:
+            fmt_argo = {"Temp (°C)": "{:.3f}", "Salinity (PSU)": "{:.3f}",
+                        "Pressure (dbar)": "{:.0f}"}
+            st.dataframe(
+                bad_argo.style.format(fmt_argo, na_rep="—"),
+                height=200,
+                width='stretch',
+            )
+        else:
+            st.success("No bad Argo QC flags in this time window.")
+    else:
+        st.info("No Argo data available.")
 
 # ─── TAB 5: About ────────────────────────────────────────────────────────────
 
@@ -608,7 +681,7 @@ with tab_about:
     st.markdown("""
 ## About this dashboard
 
-This application was built as a REST API skills demonstration for a
+This application was built as a REST API skills demonstration for DTO-Ocean_CofE 
 **Data Scientist position at [GEOMAR Helmholtz Centre for Ocean Research Kiel](https://www.geomar.de)**.
 
 ### What it demonstrates
@@ -627,7 +700,7 @@ This application was built as a REST API skills demonstration for a
 
 | Source | Variables | Update frequency |
 |--------|-----------|-----------------|
-| [Open-Meteo Marine API](https://open-meteo.com/en/docs/marine-weather-api) | Wave height, direction, period | Hourly, NRT |
+| [Open-Meteo Marine API](https://open-meteo.com/en/docs/marine-weather-api) | SST, Wave height, direction, period | Hourly, NRT |
 | [Open-Meteo Archive API](https://open-meteo.com/en/docs/historical-weather-api) | Air temp, precipitation, wind | Daily |
 | [IFREMER ERDDAP — Argo](https://erddap.ifremer.fr/erddap/tabledap/ArgoFloats.html) | T/S profiles at depth | As floats surface (~10 days) |
 
@@ -638,5 +711,5 @@ Atlantic region (12–20°N, 20–27°W), the area relevant to the Ocean Centre 
 for West Africa (Ocean-CofE) project.
 
 ### Code
-Full source code and documentation: see the GitHub repository linked from this deployment.
+Full source code and documentation: https://github.com/blockecology/oscm-dashboard/
     """)
