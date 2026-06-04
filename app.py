@@ -921,6 +921,7 @@ with tab_anomaly:
 
         fig_an.update_layout(
             height=240,
+            paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="#0b1d2e",
             yaxis_title=label_map.get(var, var),
             legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
