@@ -29,8 +29,7 @@ BBOX      = dict(lat_min=12.0, lat_max=20.0, lon_min=-27.0, lon_max=-20.0)
 
 # ── HTTP utility ─────────────────────────────────────────────────────────────
 
-def _get(url: str, params: dict = None, timeout: int = 25) -> dict | None:
-    """GET request with retry and structured error handling."""
+def _get(url: str, params: dict = None, timeout: int = 10) -> dict | None:
     for attempt in range(3):
         try:
             r = requests.get(url, params=params, timeout=timeout)
@@ -41,6 +40,9 @@ def _get(url: str, params: dict = None, timeout: int = 25) -> dict | None:
                 continue
             log.warning(f"HTTP {r.status_code} from {url}")
             return None
+        except requests.exceptions.Timeout:
+            log.warning(f"Timeout on attempt {attempt+1}")
+            return None  # don't retry timeouts — server is down
         except requests.exceptions.RequestException as e:
             log.warning(f"Request error (attempt {attempt+1}): {e}")
             time.sleep(3)
