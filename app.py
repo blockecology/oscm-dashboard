@@ -683,30 +683,29 @@ with tab_qc:
 with tab_anomaly:
     st.markdown(
         "Two complementary unsupervised ML methods detect anomalies in the marine time series. "
-        "**Isolation Forest** flags unusual multivariate combinations, such as low wave height "
+        "**Isolation Forest** flags unusual multivariate combinations — e.g. low wave height "
         "paired with an unusually long period. "
-        "**LSTM Autoencoder** learns the normal 24-hour temporal pattern and flags timesteps "
-        "where reconstruction error is high, catching contextual anomalies that look "
-        "plausible in isolation but break the expected sequence. "
-        "Points flagged by **both** methods are the highest-confidence anomalies."
+        "**MLP Autoencoder** (scikit-learn) learns the normal 24-hour temporal pattern by "
+        "training a neural network to reconstruct flattened time windows; timesteps where "
+        "reconstruction error is high are flagged as contextual anomalies. "
+        "Points flagged by **both** methods are the highest-confidence anomalies. "
+        "Models are trained on at least 30 days of data regardless of the sidebar setting, "
+        "to ensure a reliable sample of diurnal cycles."
     )
 
     # ── Run ML (cached separately so it only re-runs when data changes) ───────
     @st.cache_data(ttl=3600, show_spinner=False)
-    def run_anomaly_detection(marine_hash: int, version: int = 1):
+    def run_anomaly_detection(marine_hash: int, ml_marine_df: pd.DataFrame = None, version: int = 1):
         """
-        Fits Isolation Forest and trains LSTM Autoencoder on the marine time series.
+        Fits Isolation Forest and trains MLP Autoencoder on the marine time series.
         Cached by a hash of the DataFrame so it re-runs only when data changes.
         Returns a dict of results rather than complex objects, which Streamlit
         can serialise cleanly for caching.
         """
-        import os
-        os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
         from sklearn.ensemble import IsolationForest
         from sklearn.preprocessing import StandardScaler
 
-        df = marine_df.copy()
+        df = (ml_marine_df if ml_marine_df is not None else marine_df).copy()
 
         # ── Feature engineering ───────────────────────────────────────────────
         core_vars = [v for v in ["wave_height", "wave_period", "sea_surface_temperature"]
@@ -804,15 +803,35 @@ with tab_anomaly:
         }
 
     # ── Run button + session state ───────────────────────────────────────────
-    # ML training is expensive (~30s for LSTM), so we only run it on demand.
+    # ML training is on-demand to avoid slowing down every page load.
     # st.session_state persists values across Streamlit reruns within the same
     # browser session, so results stay visible after the button is clicked.
 
+    # ── Minimum data check ────────────────────────────────────────────────
+    # Both models need enough diurnal cycles to learn a reliable normal
+    # pattern. We enforce a 30-day minimum for the ML fetch, independent
+    # of whatever the sidebar time-window slider is set to.
+    ML_MIN_DAYS = 30
+    if days_back < ML_MIN_DAYS:
+        st.warning(
+            f"The sidebar time window is set to **{days_back} days**, which may be "
+            f"too short for reliable anomaly detection. "
+            f"Models will be trained on **{ML_MIN_DAYS} days** of data regardless. "
+            f"Consider increasing the time window to at least 30 days for best results."
+        )
+
+    # Always fetch at least ML_MIN_DAYS for the ML models
+    ml_days = max(days_back, ML_MIN_DAYS)
+    if ml_days != days_back:
+        ml_marine_df, _ = fetch_marine(ml_days)
+    else:
+        ml_marine_df = marine_df
+
     marine_hash = hash((
-        len(marine_df),
-        str(marine_df.index.min()),
-        str(marine_df.index.max()),
-        round(float(marine_df["wave_height"].iloc[0]), 3),
+        len(ml_marine_df),
+        str(ml_marine_df.index.min()),
+        str(ml_marine_df.index.max()),
+        round(float(ml_marine_df["wave_height"].iloc[0]), 3),
     ))
 
     # Initialise session state keys on first load
@@ -836,8 +855,8 @@ with tab_anomaly:
             st.success("Results are up to date.")
 
     if run_clicked:
-        with st.spinner("Running anomaly detection… (first run may take ~30s for LSTM training)"):
-            st.session_state.anomaly_res  = run_anomaly_detection(marine_hash)
+        with st.spinner("Running anomaly detection… (MLP training typically takes 5–15s)"):
+            st.session_state.anomaly_res  = run_anomaly_detection(marine_hash, ml_marine_df)
             st.session_state.anomaly_hash = marine_hash
 
     # Only show results if the model has been run at least once
@@ -848,7 +867,6 @@ with tab_anomaly:
 
     iso_anomaly    = res["iso_anomaly"]
     lstm_anomaly   = res["lstm_anomaly"]
-    lstm_available = res["lstm_available"]
     combined       = res["combined"]
     iso_scores     = res["iso_scores"]
     lstm_scores    = res["lstm_scores"]
@@ -901,16 +919,15 @@ with tab_anomaly:
                 mode="markers", name=f"Isolation Forest ({iso_only.sum()})",
                 marker=dict(color=COLORS_AN["iso"], size=7, symbol="triangle-up"),
             ))
-        # LSTM only
-        if lstm_available:
-            lstm_only = lstm_anomaly & ~iso_anomaly
-            if lstm_only.any():
-                fig_an.add_trace(go.Scatter(
-                    x=vals.index[lstm_only], y=vals[lstm_only],
-                    mode="markers", name=f"MLP Autoencoder only ({lstm_only.sum()})",
-                    marker=dict(color=COLORS_AN["lstm"], size=7,
-                                symbol="triangle-down"),
-                ))
+        # MLP Autoencoder only
+        lstm_only = lstm_anomaly & ~iso_anomaly
+        if lstm_only.any():
+            fig_an.add_trace(go.Scatter(
+                x=vals.index[lstm_only], y=vals[lstm_only],
+                mode="markers", name=f"MLP Autoencoder only ({lstm_only.sum()})",
+                marker=dict(color=COLORS_AN["lstm"], size=7,
+                            symbol="triangle-down"),
+            ))
         # Combined — both methods
         if combined.any():
             fig_an.add_trace(go.Scatter(
@@ -934,7 +951,7 @@ with tab_anomaly:
     st.markdown("<div class='section-header'>Anomaly scores over time</div>",
                 unsafe_allow_html=True)
 
-    n_score_cols = 2 if lstm_available else 1
+    n_score_cols = 2
     score_cols   = st.columns(n_score_cols)
 
     with score_cols[0]:
@@ -959,7 +976,7 @@ with tab_anomaly:
         )
         st.plotly_chart(fig_iso, width="stretch")
 
-    if lstm_available and lstm_threshold is not None:
+    if lstm_threshold is not None:
         with score_cols[1]:
             fig_lstm = go.Figure()
             fig_lstm.add_trace(go.Scatter(
@@ -990,15 +1007,14 @@ with tab_anomaly:
     if combined.sum() > 0:
         top = df_feat[combined].copy()
         top["iso_score"] = iso_scores[combined]
-        if lstm_available:
-            top["lstm_mse"] = lstm_scores[combined]
+        top["ae_mse"] = lstm_scores[combined]
         top = top.sort_values("iso_score", ascending=False)
         top.index = top.index.strftime("%Y-%m-%d %H:%M UTC")
         rename = {v: label_map.get(v, v) for v in core_vars}
-        rename.update({"iso_score": "IF Score", "lstm_mse": "AE MSE"})
+        rename.update({"iso_score": "IF Score", "ae_mse": "AE MSE"})
         top = top.rename(columns=rename)
         fmt = {label_map.get(v, v): "{:.3f}" for v in core_vars}
-        fmt.update({"IF Score": "{:.3f}", "LSTM MSE": "{:.4f}"})
+        fmt.update({"IF Score": "{:.3f}", "AE MSE": "{:.4f}"})
         st.dataframe(
             top.style.format(fmt, na_rep="—")
                .background_gradient(subset=["IF Score"],
