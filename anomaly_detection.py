@@ -163,104 +163,87 @@ print(f"  Top anomaly score: {iso_scores.max():.3f}")
 
 
 # =============================================================================
-# SECTION 4: Method 2 — LSTM Autoencoder
+# SECTION 4: Method 2 — MLP Autoencoder
 # =============================================================================
 # How it works:
-#   An autoencoder is trained to compress the input and then reconstruct it.
-#   It learns what "normal" looks like. When it sees an anomalous pattern,
-#   reconstruction is poor — high mean squared error (MSE).
-#   We flag points whose reconstruction MSE exceeds a threshold.
+#   Same concept as an LSTM Autoencoder: train a neural network to reconstruct
+#   "normal" time windows, then flag windows with high reconstruction error.
 #
-# The LSTM (Long Short-Term Memory) layer processes sequences of timesteps,
-# so the model learns normal temporal patterns, not just normal values.
+#   Implementation: scikit-learn's MLPRegressor, which avoids the TensorFlow
+#   dependency. Each 24-hour window is flattened into a single vector and fed
+#   through a bottleneck architecture (64 → 32 → 64 hidden units). The network
+#   must compress the window through the 32-unit bottleneck to reconstruct it,
+#   so it learns what normal patterns look like. Anomalous windows reconstruct
+#   poorly → high MSE → flagged.
+#
+# Trade-off vs LSTM:
+#   The MLP treats each window as a flat vector, so it doesn't explicitly model
+#   temporal order within the window. An LSTM processes the sequence step-by-step
+#   and is better at detecting order-dependent patterns. In practice, for
+#   hourly oceanographic data the difference is small — the rolling statistics
+#   in the feature matrix already encode much of the temporal structure.
 #
 # Key parameters:
-#   WINDOW      — how many timesteps the model sees at once (24h window)
+#   WINDOW      — how many timesteps per window (24h)
 #   THRESHOLD   — percentile of reconstruction error above which we flag
 #                 anomalies (95th percentile = top 5% of errors)
 
-print("\n[4/5] Training LSTM Autoencoder...")
+print("\n[4/5] Training MLP Autoencoder...")
+
+from sklearn.neural_network import MLPRegressor
 
 WINDOW    = 24   # 24-hour sliding window
 THRESHOLD = 95   # flag top 5% reconstruction errors as anomalous
 
-try:
-    import tensorflow as tf
-    from tensorflow import keras
+# ── Build flattened windows ───────────────────────────────────────────────────
+# Shape: (n_samples, WINDOW * n_features)
+n_features = X_scaled.shape[1]
+X_win = np.array([X_scaled[i:i+WINDOW].flatten()
+                  for i in range(len(X_scaled) - WINDOW + 1)])
+print(f"  Window matrix shape: {X_win.shape}")
 
-    tf.get_logger().setLevel("ERROR")
+# ── Architecture ─────────────────────────────────────────────────────────────
+# Encoder:  input → 64 → 32 (bottleneck)
+# Decoder:  32 → 64 → output
+# The bottleneck forces the network to learn a compressed representation
+# of normal patterns rather than simply copying the input.
+ae_mlp = MLPRegressor(
+    hidden_layer_sizes=(64, 32, 64),
+    activation="tanh",          # tanh keeps activations bounded, good for time series
+    solver="adam",              # adaptive learning rate, same as in the LSTM version
+    max_iter=200,
+    random_state=42,
+    early_stopping=True,        # stop when validation loss stops improving
+    validation_fraction=0.1,
+    n_iter_no_change=10,
+)
 
-    # ── Build sequences ───────────────────────────────────────────────────────
-    # Shape: (n_samples, window_size, n_features)
-    def make_sequences(data: np.ndarray, window: int) -> np.ndarray:
-        return np.array([data[i:i+window] for i in range(len(data) - window + 1)])
+# ── Train ─────────────────────────────────────────────────────────────────────
+# Unsupervised: target = input (the network learns to reconstruct itself)
+ae_mlp.fit(X_win, X_win)
+print(f"  Converged after {ae_mlp.n_iter_} iterations")
+print(f"  Final validation loss: {ae_mlp.best_validation_score_:.4f}")
 
-    X_seq = make_sequences(X_scaled, WINDOW)
-    print(f"  Sequence shape: {X_seq.shape}")
+# ── Reconstruction error ──────────────────────────────────────────────────────
+X_win_pred = ae_mlp.predict(X_win)
+mse_per_win = np.mean((X_win - X_win_pred) ** 2, axis=1)
 
-    n_features = X_scaled.shape[1]
+# Align errors back to the original DataFrame index
+ae_scores = np.full(len(df_feat), np.nan)
+ae_scores[WINDOW-1:] = mse_per_win
 
-    # ── Architecture ──────────────────────────────────────────────────────────
-    # Encoder: compress the sequence to a low-dimensional representation
-    # Decoder: reconstruct the original sequence from that representation
-    inputs  = keras.Input(shape=(WINDOW, n_features))
-    # Encoder
-    x = keras.layers.LSTM(32, activation="tanh", return_sequences=False)(inputs)
-    x = keras.layers.RepeatVector(WINDOW)(x)
-    # Decoder
-    x = keras.layers.LSTM(32, activation="tanh", return_sequences=True)(x)
-    outputs = keras.layers.TimeDistributed(keras.layers.Dense(n_features))(x)
+threshold_val = np.nanpercentile(ae_scores, THRESHOLD)
+lstm_anomaly  = pd.Series(ae_scores > threshold_val, index=df_feat.index)
+lstm_scores_s = pd.Series(ae_scores, index=df_feat.index)
 
-    autoencoder = keras.Model(inputs, outputs)
-    autoencoder.compile(optimizer="adam", loss="mse")
-
-    # ── Train ──────────────────────────────────────────────────────────────────
-    # We train on ALL data (unsupervised — no labels needed).
-    # The model learns to reconstruct normal patterns well.
-    history = autoencoder.fit(
-        X_seq, X_seq,
-        epochs=20,
-        batch_size=64,
-        validation_split=0.1,
-        verbose=0,
-        callbacks=[keras.callbacks.EarlyStopping(
-            patience=3, restore_best_weights=True, monitor="val_loss"
-        )]
-    )
-    epochs_run = len(history.history["loss"])
-    final_loss = history.history["val_loss"][-1]
-    print(f"  Trained for {epochs_run} epochs, val_loss = {final_loss:.4f}")
-
-    # ── Reconstruction error ───────────────────────────────────────────────────
-    X_pred   = autoencoder.predict(X_seq, verbose=0)
-    # MSE per timestep (last timestep of each window = the "current" point)
-    mse_per_seq = np.mean((X_seq - X_pred) ** 2, axis=(1, 2))
-
-    # Align errors with the original DataFrame index
-    # (first WINDOW-1 rows have no sequence starting from them)
-    lstm_scores = np.full(len(df_feat), np.nan)
-    lstm_scores[WINDOW-1:] = mse_per_seq
-
-    threshold_val  = np.nanpercentile(lstm_scores, THRESHOLD)
-    lstm_anomaly   = pd.Series(lstm_scores > threshold_val, index=df_feat.index)
-    lstm_scores_s  = pd.Series(lstm_scores, index=df_feat.index)
-
-    n_lstm = lstm_anomaly.sum()
-    print(f"  Anomalies flagged: {n_lstm} ({n_lstm/lstm_anomaly.notna().sum()*100:.1f}%)")
-    print(f"  Reconstruction error threshold: {threshold_val:.4f}")
-    lstm_available = True
-
-except Exception as e:
-    print(f"  LSTM training failed: {e}")
-    print("  Continuing with Isolation Forest only")
-    lstm_available   = False
-    lstm_anomaly     = pd.Series(False, index=df_feat.index)
-    lstm_scores_s    = pd.Series(np.nan, index=df_feat.index)
+n_ae = lstm_anomaly.sum()
+print(f"  Anomalies flagged: {n_ae} ({n_ae/lstm_anomaly.notna().sum()*100:.1f}%)")
+print(f"  Reconstruction error threshold: {threshold_val:.4f}")
 
 # ── Combined flag ─────────────────────────────────────────────────────────────
 # An observation is "high-confidence anomalous" if BOTH methods flag it.
 # This reduces false positives — a key concern in operational QC.
-combined_anomaly = iso_anomaly & (lstm_anomaly if lstm_available else iso_anomaly)
+combined_anomaly = iso_anomaly & lstm_anomaly
 n_combined = combined_anomaly.sum()
 print(f"\n  Combined (both methods): {n_combined} anomalies")
 
@@ -275,7 +258,7 @@ print("\n[5/5] Generating plots...")
 df_feat["iso_anomaly"]      = iso_anomaly
 df_feat["iso_score"]        = iso_scores
 df_feat["lstm_anomaly"]     = lstm_anomaly
-df_feat["lstm_score"]       = lstm_scores_s
+df_feat["ae_score"]         = lstm_scores_s
 df_feat["combined_anomaly"] = combined_anomaly
 
 plot_vars = [v for v in core_vars if v in df_feat.columns]
@@ -313,10 +296,10 @@ for i, var in enumerate(plot_vars):
                label=f"Isolation Forest ({iso_anomaly.sum()})", marker="^")
 
     # LSTM anomalies
-    if lstm_available:
+    if True:  # MLP autoencoder always available
         ax.scatter(vals.index[lstm_anomaly], vals[lstm_anomaly],
                    color=COLORS["lstm"], s=25, zorder=4,
-                   label=f"LSTM Autoencoder ({lstm_anomaly.sum()})", marker="v", alpha=0.7)
+                   label=f"MLP Autoencoder ({lstm_anomaly.sum()})", marker="v", alpha=0.7)
 
     # Combined (both methods)
     ax.scatter(vals.index[combined_anomaly], vals[combined_anomaly],
@@ -351,7 +334,7 @@ ax_iso.legend(loc="upper right", fontsize=8,
 ax_iso.grid(True, color="#1a3550", linewidth=0.5, linestyle="--")
 
 # ── LSTM reconstruction error ─────────────────────────────────────────────────
-if lstm_available:
+if True:  # MLP autoencoder always available
     ax_lstm = axes[n_vars + 1]
     ax_lstm.plot(df_feat.index, lstm_scores_s,
                  color=COLORS["lstm"], linewidth=0.8, label="Reconstruction error (MSE)")
@@ -361,7 +344,7 @@ if lstm_available:
                          where=lstm_scores_s.fillna(0) >= threshold_val,
                          color=COLORS["combined"], alpha=0.3)
     ax_lstm.set_ylabel("MSE", fontsize=9)
-    ax_lstm.set_title("LSTM Autoencoder — reconstruction error (higher = more anomalous)", fontsize=10, pad=4)
+    ax_lstm.set_title("MLP Autoencoder — reconstruction error (higher = more anomalous)", fontsize=10, pad=4)
     ax_lstm.legend(loc="upper right", fontsize=8,
                    facecolor="#112b44", edgecolor="#1e4a6e", labelcolor="#dce9f5")
     ax_lstm.grid(True, color="#1a3550", linewidth=0.5, linestyle="--")
@@ -397,9 +380,9 @@ print(f"\nIsolation Forest:")
 print(f"  Flagged  : {iso_anomaly.sum()} ({iso_anomaly.mean()*100:.1f}%)")
 print(f"  Top score: {iso_scores.max():.3f}")
 
-if lstm_available:
+if True:  # MLP autoencoder always available
     valid = lstm_scores_s.dropna()
-    print(f"\nLSTM Autoencoder:")
+    print(f"\nMLP Autoencoder:")
     print(f"  Flagged    : {lstm_anomaly.sum()} ({lstm_anomaly.sum()/len(valid)*100:.1f}%)")
     print(f"  Max MSE    : {valid.max():.4f}")
     print(f"  Threshold  : {threshold_val:.4f}")

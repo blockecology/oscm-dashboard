@@ -740,54 +740,55 @@ with tab_anomaly:
         iso_scores  = -iso.score_samples(X_scaled)
         iso_anomaly = pd.Series(iso.predict(X_scaled) == -1, index=df_feat.index)
 
-        # ── LSTM Autoencoder ──────────────────────────────────────────────────
-        lstm_available = False
-        lstm_anomaly   = pd.Series(False, index=df_feat.index)
-        lstm_scores    = pd.Series(np.nan, index=df_feat.index)
-        lstm_threshold = None
+        # ── MLP Autoencoder ───────────────────────────────────────────────────
+        # Replaces the LSTM Autoencoder — same concept (learn to reconstruct
+        # normal patterns; flag high reconstruction error) but implemented
+        # entirely with scikit-learn, avoiding the TensorFlow dependency.
+        #
+        # How it works:
+        #   We flatten each 24-hour window into a single vector and train an
+        #   MLPRegressor to reconstruct it. The hidden layer acts as a
+        #   bottleneck: the network must compress the window to reconstruct
+        #   it, so it learns what a "normal" 24-hour pattern looks like.
+        #   Anomalous windows reconstruct poorly → high MSE → flagged.
+        from sklearn.neural_network import MLPRegressor
 
-        try:
-            import tensorflow as tf
-            tf.get_logger().setLevel("ERROR")
-            from tensorflow import keras
+        WINDOW    = 24
+        THRESHOLD = 95   # flag top 5% reconstruction errors
 
-            WINDOW = 24
-            X_seq  = np.array([X_scaled[i:i+WINDOW]
-                                for i in range(len(X_scaled) - WINDOW + 1)])
-            n_feat = X_scaled.shape[1]
+        # Build flattened sliding windows: shape (n_samples, WINDOW * n_features)
+        n_feat   = X_scaled.shape[1]
+        X_win    = np.array([X_scaled[i:i+WINDOW].flatten()
+                             for i in range(len(X_scaled) - WINDOW + 1)])
 
-            inp = keras.Input(shape=(WINDOW, n_feat))
-            x   = keras.layers.LSTM(32, activation="tanh",
-                                     return_sequences=False)(inp)
-            x   = keras.layers.RepeatVector(WINDOW)(x)
-            x   = keras.layers.LSTM(32, activation="tanh",
-                                     return_sequences=True)(x)
-            out = keras.layers.TimeDistributed(
-                      keras.layers.Dense(n_feat))(x)
+        # Bottleneck: hidden layer has fewer units than input
+        # Input size = WINDOW * n_feat; bottleneck = 32 units
+        ae_mlp = MLPRegressor(
+            hidden_layer_sizes=(64, 32, 64),  # compress → bottleneck → expand
+            activation="tanh",
+            solver="adam",
+            max_iter=200,
+            random_state=42,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=10,
+        )
+        ae_mlp.fit(X_win, X_win)
 
-            ae = keras.Model(inp, out)
-            ae.compile(optimizer="adam", loss="mse")
-            ae.fit(X_seq, X_seq, epochs=20, batch_size=64,
-                   validation_split=0.1, verbose=0,
-                   callbacks=[keras.callbacks.EarlyStopping(
-                       patience=3, restore_best_weights=True,
-                       monitor="val_loss")])
+        X_win_pred = ae_mlp.predict(X_win)
+        mse        = np.mean((X_win - X_win_pred) ** 2, axis=1)
 
-            X_pred       = ae.predict(X_seq, verbose=0)
-            mse          = np.mean((X_seq - X_pred) ** 2, axis=(1, 2))
-            scores_arr   = np.full(len(df_feat), np.nan)
-            scores_arr[WINDOW-1:] = mse
+        # Align errors with the original index (first WINDOW-1 rows have no window)
+        scores_arr        = np.full(len(df_feat), np.nan)
+        scores_arr[WINDOW-1:] = mse
 
-            lstm_threshold = float(np.nanpercentile(scores_arr, 95))
-            lstm_scores    = pd.Series(scores_arr, index=df_feat.index)
-            lstm_anomaly   = pd.Series(scores_arr > lstm_threshold,
-                                       index=df_feat.index)
-            lstm_available = True
+        ae_threshold = float(np.nanpercentile(scores_arr, THRESHOLD))
+        lstm_scores  = pd.Series(scores_arr, index=df_feat.index)
+        lstm_anomaly = pd.Series(scores_arr > ae_threshold, index=df_feat.index)
+        lstm_threshold = ae_threshold
+        lstm_available = True
 
-        except Exception as e:
-            pass   # graceful fallback: show IF results only
-
-        combined = iso_anomaly & (lstm_anomaly if lstm_available else iso_anomaly)
+        combined = iso_anomaly & lstm_anomaly
 
         return {
             "index":          df_feat.index,
@@ -858,8 +859,8 @@ with tab_anomaly:
     # ── Summary KPIs ──────────────────────────────────────────────────────────
     a1, a2, a3, a4 = st.columns(4)
     a1.metric("Isolation Forest flags",   f"{iso_anomaly.sum()}")
-    a2.metric("LSTM Autoencoder flags",
-              f"{lstm_anomaly.sum()}" if lstm_available else "N/A (no TF)")
+    a2.metric("MLP Autoencoder flags",
+              f"{lstm_anomaly.sum()}")
     a3.metric("Combined (both methods)",  f"{combined.sum()}")
     a4.metric("High-confidence rate",
               f"{combined.mean()*100:.1f} %")
@@ -893,7 +894,7 @@ with tab_anomaly:
             line=dict(color=COLORS_AN["normal"], width=1),
         ))
         # Isolation Forest only
-        iso_only = iso_anomaly & ~(lstm_anomaly if lstm_available else iso_anomaly)
+        iso_only = iso_anomaly & ~lstm_anomaly
         if iso_only.any():
             fig_an.add_trace(go.Scatter(
                 x=vals.index[iso_only], y=vals[iso_only],
@@ -906,7 +907,7 @@ with tab_anomaly:
             if lstm_only.any():
                 fig_an.add_trace(go.Scatter(
                     x=vals.index[lstm_only], y=vals[lstm_only],
-                    mode="markers", name=f"LSTM only ({lstm_only.sum()})",
+                    mode="markers", name=f"MLP Autoencoder only ({lstm_only.sum()})",
                     marker=dict(color=COLORS_AN["lstm"], size=7,
                                 symbol="triangle-down"),
                 ))
@@ -977,7 +978,7 @@ with tab_anomaly:
                 **PLOT_LAYOUT, height=220,
                 yaxis_title="MSE",
                 title=dict(
-                    text="LSTM Autoencoder — reconstruction error (higher = more anomalous)",
+                    text="MLP Autoencoder — reconstruction error (higher = more anomalous)",
                     font=dict(size=11)),
             )
             st.plotly_chart(fig_lstm, width="stretch")
@@ -994,7 +995,7 @@ with tab_anomaly:
         top = top.sort_values("iso_score", ascending=False)
         top.index = top.index.strftime("%Y-%m-%d %H:%M UTC")
         rename = {v: label_map.get(v, v) for v in core_vars}
-        rename.update({"iso_score": "IF Score", "lstm_mse": "LSTM MSE"})
+        rename.update({"iso_score": "IF Score", "lstm_mse": "AE MSE"})
         top = top.rename(columns=rename)
         fmt = {label_map.get(v, v): "{:.3f}" for v in core_vars}
         fmt.update({"IF Score": "{:.3f}", "LSTM MSE": "{:.4f}"})
@@ -1006,7 +1007,7 @@ with tab_anomaly:
         )
         st.markdown(
             "<div class='caption'>These are the observations flagged as anomalous by both "
-            "Isolation Forest and the LSTM Autoencoder. Sorted by Isolation Forest score "
+            "Isolation Forest and the MLP Autoencoder. Sorted by Isolation Forest score "
             "(higher = more anomalous in the multivariate feature space). "
             "In a real operational pipeline, these would be prioritised for manual inspection "
             "or fed into a downstream QC workflow.</div>",
@@ -1015,11 +1016,7 @@ with tab_anomaly:
     else:
         st.success("No high-confidence anomalies detected in this time window.")
 
-    if not lstm_available:
-        st.info(
-            "LSTM Autoencoder results are not shown because TensorFlow is not installed "
-            "in this environment. Add `tensorflow` to requirements.txt and redeploy to enable it."
-        )
+
 
 
 # ─── TAB 6: About ────────────────────────────────────────────────────────────
@@ -1042,6 +1039,9 @@ Data Scientist** position at [GEOMAR Helmholtz Centre for Ocean Research Kiel](h
 | **Interactive visualisation** | Plotly charts: time series, polar plots, profiles, T-S diagram, map |
 | **Caching** | `st.cache_data` with 1-hour TTL for efficient repeated loading |
 | **FAIR principles** | All data sourced from open, documented, citable APIs |
+| **ML anomaly detection** | Isolation Forest + MLP Autoencoder on multivariate marine time series; on-demand via session state |
+| **Feature engineering** | Rolling statistics, first differences, cyclic time encoding for ML input |
+| **Unsupervised learning** | Both methods are fully unsupervised — no labelled anomalies required, realistic for operational oceanography |
 
 ### Data sources
 
